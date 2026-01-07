@@ -6,6 +6,44 @@ import time
 import re
 import os
 
+class ActionMapper:
+    """
+    Maps NARS operations (strings) to System Action IDs (integers).
+    Handles standard ops (^left, ^right) and generic fallbacks.
+    """
+    def __init__(self):
+        self.mapping = {
+            "^left": 0,
+            "^right": 1,
+            "^forward": 2,
+            "^move": 2,
+            "^pick": 3,
+            "^drop": 4,
+            "^toggle": 5,
+            "^activate": 5, # Mapping ^activate to same as toggle/interact
+            "^say": 6,
+            "^wait": 7
+        }
+        # Create reverse mapping (first occurrence wins)
+        self.id_to_op = {}
+        for op, action_id in self.mapping.items():
+            if action_id not in self.id_to_op:
+                self.id_to_op[action_id] = op
+
+    def map_action(self, nars_op: str) -> int:
+        """
+        Returns integer ID for a given NARS operation string.
+        Returns -1 if unknown.
+        """
+        # Clean up string just in case
+        op = nars_op.strip()
+        return self.mapping.get(op, -1)
+
+    def get_op_for_id(self, action_id: int) -> str:
+        """Returns NARS op string for an ID."""
+        return self.id_to_op.get(action_id, "^wait")
+
+
 class NarsBackend(abc.ABC):
     @abc.abstractmethod
     def send_input(self, narsese: str):
@@ -21,8 +59,23 @@ class NarsBackend(abc.ABC):
         """Returns error score based on surprise/revision."""
         pass
 
+    @abc.abstractmethod
+    def stop(self):
+        """Stops the backend process."""
+        pass
+
 class OnaBackend(NarsBackend):
-    def __init__(self, executable_path="./NAR"):
+    def __init__(self, executable_path="./OpenNARS-for-Applications/NAR", output_log_path="ona.log"):
+        self.action_mapper = ActionMapper()
+        self.output_log_path = output_log_path
+        self._log_file = None
+        
+        if output_log_path:
+            try:
+                self._log_file = open(output_log_path, "w")
+            except Exception as e:
+                print(f"Warning: Could not open log file {output_log_path}: {e}")
+
         if not os.path.exists(executable_path):
              # minimal mock for testing when binary check fails, though we prefer real
              print(f"Warning: {executable_path} not found. Running in mock mode internally if launch fails.")
@@ -39,7 +92,7 @@ class OnaBackend(NarsBackend):
             )
             self.running = True
 
-            # Increase ONA volume to get details
+            # Increase ONA volume needed for verify to see output
             self.send_input("*volume=100")
         except FileNotFoundError:
             print("NAR executable not found, entering pure mock mode (no subprocess)")
@@ -56,6 +109,34 @@ class OnaBackend(NarsBackend):
         if self.running:
             self.thread = threading.Thread(target=self._monitor_output, daemon=True)
             self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        
+        # Close log file
+        if self._log_file:
+            try:
+                self._log_file.close()
+            except:
+                pass
+        
+        # Wait for monitor thread
+        if hasattr(self, 'thread') and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+
+    def send_action(self, action_id: int):
+        """Executes an action by ID."""
+        op = self.action_mapper.get_op_for_id(action_id)
+        # ONA requires valid Narsese punctuation
+        # We send it as an input event/goal
+        # Use full self format for consistency with OpenNARS
+        self.send_input(f"<(*,{{SELF}}) --> {op}>! :|:")
 
     def send_input(self, narsese: str):
         if not self.running:
@@ -104,14 +185,9 @@ class OnaBackend(NarsBackend):
         """
         Reads stdout line by line.
         Detects:
-        - Executed operations: "^op executed with args"
-        - Surprise: "Anticipation failed" or "Revision" (needs heuristics)
+        - Executed operations: "^op executed with args" OR "OUT: (^op"
+        - Surprise: "Anticipation failed" or "Revision" or new "OUT:"
         """
-        # Regex to detect reinforcement vs contradiction (simple heuristic)
-        # Truth: frequency=0.9... confidence=...
-        # If frequency drops significantly from 1.0, it's a negative revision (Correction)
-        # If frequency stays near 1.0, it's positive (Reinforcement)
-        
         while self.running:
             try:
                 line = self.process.stdout.readline()
@@ -122,24 +198,63 @@ class OnaBackend(NarsBackend):
                 if not line:
                     continue
 
+                # Log to file instead of console
+                if self._log_file:
+                    self._log_file.write(f"{line}\n")
+                    self._log_file.flush()
+
                 # Debug print to see what's happening
-                # print(f"ONA: {line}") 
+                # print(f"ONA RAW: {line}") 
 
                 # 1. Detect Operations
-                # Example: "^left executed with args"
+                # Case A: Old format or debug "executed with args"
                 if " executed with args" in line:
-                    # Extract the operation name
-                    # Format is usually: <Term> executed with args <Args>
-                    # We might need to split carefully.
                     parts = line.split(" executed with args")
                     if len(parts) > 0:
                         op_candidate = parts[0].strip()
-                        # Verify it starts with ^ (usually Narsese operations do)
                         if op_candidate.startswith("^"):
                             self.last_action = op_candidate
+                
+                # Case A.5: Selected input (Verification for "Muscle Test")
+                # If we see "Selected: ^left", it means the system accepted the op input
+                # This counts as "checking the wires" even if not executed logic
+                if "Selected: " in line:
+                    if "^" in line:
+                         match = re.search(r"\^([a-zA-Z0-9_]+)", line)
+                         if match:
+                             self.last_action = "^" + match.group(1)
+
+                # Case B: ONA Shell Format "OUT: (^left,#1)!"
+                if line.startswith("OUT:"):
+                    # Extract content after OUT:
+                    content = line[4:].strip()
+                    # Check if it looks like an operation tuple (^op, args)!
+                    # Relaxed Regex for ^op anywhere in the content
+                    op_match = re.search(r"\^([a-zA-Z0-9_]+)", content)
+                    if op_match:
+                        op_name = "^" + op_match.group(1)
+                        # print(f"DEBUG ONA PARSED ACTION: {op_name} from {line}")
+                        self.last_action = op_name
+                    else:
+                        pass
+                        # print(f"DEBUG ONA NO ACTION MATCH in {line}")
+                    
+                    # 2. Detect Surprise / Novelty / Revision
+                    
+                    # Capture confidence
+                    # Format: %Frequency;Confidence%
+                    # e.g. %1.00;0.58%
+                    conf_match = re.search(r";([0-9\.]+)%", content)
+                    if conf_match:
+                        conf = float(conf_match.group(1))
+                        # print(f"DEBUG ONA CONF: {conf} from {line}")
+                        if conf > 0.3: # Threshold
+                            self.last_error = max(self.last_error, 0.3)
+                    
+                    # Store as derived
+                    self.last_derived.append(content)
 
                 # 1.5 Detect Anticipations
-                # "decision expectation=0.543 implication: ..."
                 if "decision expectation=" in line:
                     try:
                         match = re.search(r"decision expectation=([-0-9\.]+) implication: (.*)", line)
@@ -150,60 +265,28 @@ class OnaBackend(NarsBackend):
                     except:
                         pass
                 
-                # "Anticipating: <...>" (as requested by user, though not found in grep)
                 if "Anticipating:" in line:
                     self.anticipations.append((0.5, line.strip()))
 
-                # 2. Detect Surprise / Novelty / Revision
-                # We want to detect if the system is "surprised" or "learning new things".
-                # 1. Negative Revision (Anticipation failure): Frequency drops.
-                # 2. Novelty (New Rule): "Derived" with reasonable confidence.
-                
-                # Check for Revision
-                if "Revis" in line:
-                    freq_match = re.search(r"frequency=([0-9\.]+)", line)
-                    if freq_match:
-                        freq = float(freq_match.group(1))
-                        # If frequency is low or dropped, it's surprise!
-                        if freq < 0.9:
-                             self.last_error = 0.8
-                    else:
-                        # Fallback if parsing fails
-                        self.last_error = 0.5
-                
-                # Check for Derivation (Novelty)
-                # If we derive a new strong implication, that's a "Surprise" to the previous model (Schema adaptation)
+                # Legacy "Derived:" check
                 if "Derived" in line:
-                     # Debug print
-                     # print(f"DEBUG ONA: {line}")
-                     
-                     # Capture derived terms (e.g., used for sequence learning verification)
                      if line.startswith("Derived:"):
-                        # Greedy match to capture terms containing '>' like implications =/>
                         match = re.search(r"<(.+)>", line)
                         if match:
                             term = match.group(1)
                             self.last_derived.append(term)
-
-                     # Filter: The derivation must be relevant to the recent input.
-                     # If last input was "boom", the derivation should contain "boom".
-                     # This prevents background noise (if any) from triggering high vigilance.
+                     
                      if self.last_input_term and self.last_input_term not in line:
                          continue
 
-                     # Check confidence to avoid noise
-                     # Derived: ... confidence=0.28...
                      try:
                          conf_match = re.search(r"confidence=([0-9\.]+)", line)
                          if conf_match:
                              conf = float(conf_match.group(1))
-                             # If we derived something with significant confidence, it's a signal
-                             if conf > 0.2: 
-                                 # We set a lower error for derivation than direct failure
-                                 self.last_error = max(self.last_error, 0.3 * conf)
+                             if conf > 0.1: 
+                                 self.last_error = max(self.last_error, 0.3)
                      except:
                          pass
-
 
             except ValueError:
                 continue
@@ -212,4 +295,7 @@ class OnaBackend(NarsBackend):
                 break
         
         if self.process:
-            self.process.kill()
+            try:
+                self.process.kill()
+            except:
+                pass

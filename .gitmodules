@@ -1,3 +1,6 @@
 [submodule "OpenNARS-for-Applications"]
 	path = OpenNARS-for-Applications
 	url = https://github.com/opennars/OpenNARS-for-Applications.git
+[submodule "opennars_java"]
+	path = opennars_java
+	url = https://github.com/opennars/opennars.git

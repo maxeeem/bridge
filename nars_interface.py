@@ -38,6 +38,9 @@ class OnaBackend(NarsBackend):
                 universal_newlines=True
             )
             self.running = True
+
+            # Increase ONA volume to get details
+            self.send_input("*volume=100")
         except FileNotFoundError:
             print("NAR executable not found, entering pure mock mode (no subprocess)")
             self.process = None
@@ -109,17 +112,29 @@ class OnaBackend(NarsBackend):
                             self.last_action = op_candidate
 
                 # 2. Detect Surprise / Revision
-                # Heuristic: Match "Anticipation failed" or "Revision" (if printed)
-                # Note: ONA might not print "Anticipation failed" explicitly in all versions.
-                # Use "decision expectation" as a sign of activity, but "Revision" implies belief change.
-                if "Anticipation failed" in line:
-                    self.last_error = 1.0
-                elif "Revision" in line: 
-                    # If "Revision" is explicitly logged (user heuristic request)
-                    self.last_error = 0.5 # Arbitrary "high" score for revision
+                # Heuristic: Match "Revision" or "Revised"
+                # The log output uses "Revised:", but instructions said "Revision". We match "Revis" to coverage both.
+                if "Revis" in line:
+                    # Capture confidence if possible, but default to 0.5 per instructions
+                    # Example line: Revised: ... confidence=0.55 ...
+                    if "confidence=" in line:
+                         try:
+                             # Regex or split to find confidence
+                             # strict parsing or just greedy find
+                             match = re.search(r"confidence=([0-9\.]+)", line)
+                             if match:
+                                 conf = float(match.group(1))
+                                 # We could use conf as error, or delta.
+                                 # User instruction: "set self.last_error = 0.5 (or higher)"
+                                 self.last_error = 0.5
+                             else:
+                                 self.last_error = 0.5
+                         except:
+                             self.last_error = 0.5
+                    else:
+                        self.last_error = 0.5
                 
-                # Check for "CONFIRM" vs "DISCONFIRM" if available, or just ignore for now 
-                # as ONA default logging is sparse on this.
+                # Removed "Anticipation failed" check as it doesn't exist in ONA logs currently.
 
             except ValueError:
                 continue

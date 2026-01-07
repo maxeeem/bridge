@@ -3,29 +3,26 @@ import numpy as np
 import re
 import math
 import os
+import argparse
 
 def analyze():
+    parser = argparse.ArgumentParser(description="Analyze NARS brain dump")
+    parser.add_argument("--log", type=str, default="ona_minigrid.log", help="Path to NARS log file")
+    args = parser.parse_args()
+
     # 1. Mining the Log
-    log_path = "ona_minigrid.log"
+    log_path = args.log
     if not os.path.exists(log_path):
         print(f"Error: {log_path} not found.")
         return
 
-    print("Mining ONA logs...")
+    print(f"Mining logs from {log_path}...")
     
     # Regex to find Implications where consequent is <goal --> seen>
-    # We look for lines starting with "Derived:" or "Revised:"
-    # Pattern: ... <... =/> <goal --> seen>> ... confidence=0.xyz
+    # Works for ONA: Derived: ... <... =/> ...> ... confidence=0.xyz
+    # Works for OpenNARS: OUT: <... =/> ...>. %1.00;0.90%
     
-    # We want to capture the condition part. 
-    # Example: <<event_0 --> seen> =/> <goal --> seen>>
-    # Example: <(<event_1 --> seen> &/ <event_0 --> seen>) =/> <goal --> seen>>
-    # Example procedural: <((<event_0 --> seen> &/ ^left) =/> <goal --> seen>>
-    
-    # We'll use a fairly broad regex and then process the condition
-    # Capture group 1: condition
-    # Capture group 2: confidence
-    pattern = re.compile(r"<(.*) =/> <goal --> seen>>.*confidence=([0-9\.]+)")
+    # We'll parse broadly.
     
     best_rule = None
     best_conf = -1.0
@@ -34,14 +31,28 @@ def analyze():
     with open(log_path, 'r') as f:
         for line in f:
             if "=/> <goal --> seen>" in line:
-                match = pattern.search(line)
-                if match:
-                    condition = match.group(1)
-                    conf = float(match.group(2))
-                    
+                
+                # Check for ONA format
+                ona_match = re.search(r"<(.*) =/> <goal --> seen>>.*confidence=([0-9\.]+)", line)
+                
+                # Check for OpenNARS format
+                # Expects: <(A) =/> <goal --> seen>>. %1.00;0.90%
+                opennars_match = re.search(r"<(.*) =/> <goal --> seen>>.*%([0-9\.]+);([0-9\.]+)%", line)
+
+                condition = None
+                conf = 0.0
+
+                if ona_match:
+                    condition = ona_match.group(1)
+                    conf = float(ona_match.group(2))
+                elif opennars_match:
+                    condition = opennars_match.group(1)
+                    # Group 2 is freq, Group 3 is conf
+                    conf = float(opennars_match.group(3))
+                
+                if condition:
                     if conf > best_conf:
                         # Extract basic event ID from condition, e.g. "event_0" from "<event_0 --> seen>"
-                        # or from complex conditions, pick the first event found
                         event_match = re.search(r"event_([0-9]+)", condition)
                         if event_match:
                             best_rule = line.strip()

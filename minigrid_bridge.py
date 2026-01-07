@@ -2,17 +2,30 @@ import gymnasium as gym
 import minigrid
 import time
 import os
+import argparse
 from nars_interface import OnaBackend, ActionMapper
+from opennars_interface import OpenNarsBackend
 from quantizer import DynamicEventMap
 from encoders import VisualEncoder
 
 def main():
+    parser = argparse.ArgumentParser(description="Minigrid Agent with NARS Backend")
+    parser.add_argument("--backend", type=str, choices=["ona", "opennars"], default="ona", help="Choose NARS backend: ona or opennars")
+    parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run")
+    parser.add_argument("--jar", type=str, default="opennars.jar", help="Path to OpenNARS JAR file (if backend is opennars)")
+    args = parser.parse_args()
+
     # Setup
     # Initialize gym.make("MiniGrid-Empty-5x5-v0", render_mode="human")
     env = gym.make("MiniGrid-Empty-5x5-v0", render_mode="human")
 
-    # Initialize OnaBackend (logging to ona_minigrid.log)
-    nars = OnaBackend(output_log_path="ona_minigrid.log")
+    # Initialize Backend
+    if args.backend == "ona":
+        print("Initializing ONA Backend...")
+        nars = OnaBackend(output_log_path="ona_minigrid.log")
+    else:
+        print(f"Initializing OpenNARS Backend with {args.jar}...")
+        nars = OpenNarsBackend(jar_path=args.jar, output_log_path="opennars_minigrid.log")
 
     # Initialize VisualEncoder and DynamicEventMap
     mapper = ActionMapper()
@@ -27,8 +40,8 @@ def main():
     else:
         print("Starting fresh (no knowledge.pkl found)")
 
-    # The Episode Loop (Run 10 episodes)
-    num_episodes = 10
+    # The Episode Loop
+    num_episodes = args.episodes
     step_cnt = 0
 
     try:

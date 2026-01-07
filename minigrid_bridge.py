@@ -6,7 +6,7 @@ import argparse
 from nars_interface import OnaBackend, ActionMapper
 from opennars_interface import OpenNarsBackend
 from quantizer import DynamicEventMap
-from encoders import VisualEncoder
+from encoders import VisualEncoder, JEPAVisualEncoder
 
 def main():
     parser = argparse.ArgumentParser(description="Minigrid Agent with NARS Backend")
@@ -29,14 +29,14 @@ def main():
 
     # Initialize VisualEncoder and DynamicEventMap
     mapper = ActionMapper()
-    encoder = VisualEncoder()
+    encoder = JEPAVisualEncoder()
     event_map = DynamicEventMap()
 
     # Load knowledge if it exists, else start fresh
     if os.path.exists("knowledge.pkl"):
         event_map.load("knowledge.pkl")
         # We also need to load the encoder to ensure the vector space matches the learned prototypes
-        encoder.load("encoder.pkl")
+        # encoder.load("encoder.pkl")
     else:
         print("Starting fresh (no knowledge.pkl found)")
 
@@ -106,7 +106,7 @@ def main():
             # Cleanup: Save event_map.save('knowledge.pkl') after every episode.
             print("Episode complete. Saving knowledge...")
             event_map.save("knowledge.pkl")
-            encoder.save("encoder.pkl")
+            # encoder.save("encoder.pkl")
             
     except KeyboardInterrupt:
         print("\nInterrupted by user.")

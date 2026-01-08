@@ -12,12 +12,13 @@ def main():
     parser = argparse.ArgumentParser(description="Minigrid Agent with NARS Backend")
     parser.add_argument("--backend", type=str, choices=["ona", "opennars"], default="ona", help="Choose NARS backend: ona or opennars")
     parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run")
+    parser.add_argument("--env", type=str, default="MiniGrid-Empty-5x5-v0", help="MiniGrid environment ID")
     parser.add_argument("--jar", type=str, default="opennars.jar", help="Path to OpenNARS JAR file (if backend is opennars)")
     args = parser.parse_args()
 
     # Setup
-    # Initialize gym.make("MiniGrid-Empty-5x5-v0", render_mode="human")
-    env = gym.make("MiniGrid-Empty-5x5-v0", render_mode="human")
+    # Initialize gym.make using argument
+    env = gym.make(args.env, render_mode="human")
 
     # Initialize Backend
     if args.backend == "ona":

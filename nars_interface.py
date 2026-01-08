@@ -16,12 +16,15 @@ class ActionMapper:
             "^left": 0,
             "^right": 1,
             "^forward": 2,
+            "^go": 2,
             "^move": 2,
             "^pick": 3,
+            "^pickup": 3,
             "^drop": 4,
             "^toggle": 5,
             "^activate": 5, # Mapping ^activate to same as toggle/interact
             "^say": 6,
+            "^done": 6,
             "^wait": 7
         }
         # Create reverse mapping (first occurrence wins)
